@@ -1,14 +1,5 @@
 @import 'tailwindcss';
 
-@font-face {
-  font-family: 'Schengen';
-  src: url('/fonts/ABCSchengenVariable-latin.woff2') format('woff2');
-  font-weight: 200 1000;
-  font-stretch: 100% 125%;
-  font-style: oblique -12deg 0deg;
-  font-display: block;
-}
-
 @theme {
   --font-schengen: 'Schengen', ui-sans-serif, system-ui, sans-serif;
 }

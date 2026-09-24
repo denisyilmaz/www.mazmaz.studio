@@ -24,7 +24,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
+      # Served from the repo subfolder until the custom domain is live; then drop --base-href and restore public/CNAME.
+      - run: npm run build -- --base-href /www.mazmaz.studio/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist/mazmaz/browser
