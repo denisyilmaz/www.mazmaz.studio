@@ -18,7 +18,7 @@ npm test
 npm run build    # static site in dist/mazmaz/browser
 ```
 
-Pushing to `main` runs `.github/workflows/deploy.yml`, which builds and publishes `dist/mazmaz/browser` to GitHub Pages at https://mazmaz.studio/. The custom domain lives in `public/CNAME`; Pages source is "GitHub Actions".
+Pushing to `main` runs `.github/workflows/deploy.yml`, which builds and publishes `dist/mazmaz/browser` to GitHub Pages at https://www.mazmaz.studio/. The custom domain lives in `public/CNAME` (`www.mazmaz.studio` is the primary host; the apex redirects to it); Pages source is "GitHub Actions".
 
 ## DNS
 
