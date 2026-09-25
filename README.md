@@ -18,13 +18,11 @@ npm test
 npm run build    # static site in dist/mazmaz/browser
 ```
 
-Pushing to `main` runs `.github/workflows/deploy.yml`, which builds and publishes `dist/mazmaz/browser` to GitHub Pages at https://denisyilmaz.github.io/www.mazmaz.studio/ (the workflow passes `--base-href /www.mazmaz.studio/`).
+Pushing to `main` runs `.github/workflows/deploy.yml`, which builds and publishes `dist/mazmaz/browser` to GitHub Pages at https://mazmaz.studio/. The custom domain lives in `public/CNAME`; Pages source is "GitHub Actions".
 
-## Going live on mazmaz.studio
+## DNS
 
-Once the domain is registered:
-
-1. Set these DNS records at the registrar:
+The domain points at GitHub Pages with these records:
 
    | Host | Type  | Value                    |
    | ---- | ----- | ------------------------ |
@@ -40,10 +38,8 @@ Once the domain is registered:
 
    The AAAA records are optional (IPv6). Remove any existing A/AAAA/CNAME records for @ and www first.
 
-2. Add `public/CNAME` containing `mazmaz.studio` (one line).
-3. Remove the `--base-href /www.mazmaz.studio/` flag from `.github/workflows/deploy.yml`.
-4. Switch the absolute URLs in `src/index.html` (canonical, og:url, og:image, twitter:image) back to `https://mazmaz.studio/`.
-5. Push. Then in the repo settings under Pages, confirm the custom domain shows `mazmaz.studio` with a green check and enable "Enforce HTTPS" (the certificate takes a few minutes after DNS resolves). `www.mazmaz.studio` will redirect to the apex automatically.
+
+To move the site elsewhere temporarily, pass `--base-href /<folder>/` to the build in the workflow and point the absolute URLs in `src/index.html` (canonical, og:url, og:image, twitter:image) at the new address.
 
 ## Font
 
