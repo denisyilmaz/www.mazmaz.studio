@@ -160,7 +160,8 @@ const smoothstep = (lo: number, hi: number, v: number) => {
 @Component({
   selector: 'maz-grid',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { class: 'fixed inset-0 block touch-none overflow-hidden select-none' },
+  // Sized to the large viewport, so the grid runs on behind the browser's toolbars and the notch.
+  host: { class: 'fixed inset-x-0 top-0 block h-lvh touch-none overflow-hidden select-none' },
   template: `
     <h1
       class="flex flex-col font-schengen leading-none transition-opacity duration-700 ease-out"
@@ -187,12 +188,15 @@ const smoothstep = (lo: number, hi: number, v: number) => {
       style="font-size: 100px; font-variation-settings: 'wght' ${REST.wght}, 'wdth' ${REST.wdth}, 'slnt' ${REST.slnt}"
       >${LETTERS}</span
     >
+    <span #safeArea aria-hidden="true" class="invisible fixed inset-safe"></span>
   `,
 })
 export class MazGrid {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly destroyRef = inject(DestroyRef);
   private readonly probeRest = viewChild.required<ElementRef<HTMLElement>>('probeRest');
+  /** The part of the screen no toolbar, notch or home indicator covers. */
+  private readonly safeArea = viewChild.required<ElementRef<HTMLElement>>('safeArea');
 
   /** Server / first client render: only the semantic pair, so hydration matches. */
   protected readonly rows = signal<Row[]>([
@@ -300,8 +304,11 @@ export class MazGrid {
     const rowH = fontSize * ROW_RATIO;
     const gap = fontSize * GAP_RATIO;
     const cols = visibleWords + OVERFLOW_WORDS;
-    const rows = Math.ceil(vh / rowH) + 1;
-    const offsetY = (vh - rows * rowH) / 2;
+    // Centre on what stays visible rather than on the host, which reaches behind the toolbars.
+    const safe = this.safeArea().nativeElement.getBoundingClientRect();
+    const midY = safe.height > 0 ? safe.top + safe.height / 2 : vh / 2;
+    const rows = Math.ceil((2 * Math.max(midY, vh - midY)) / rowH) + 1;
+    const offsetY = midY - (rows * rowH) / 2;
 
     const midC = Math.floor(cols / 2);
     const midR = Math.floor(rows / 2);
@@ -462,10 +469,12 @@ export class MazGrid {
     });
     on('pointercancel', () => (this.pointerActive = false));
 
-    // touch-action: none keeps drags and double taps from panning or zooming. iOS Safari drives pinch zoom
-    // through its own gesture events; cancelling those as well makes sure it never zooms.
+    // touch-action: none keeps drags from panning, but iOS Safari doesn't reliably honour it for zoom.
+    // Pinch zoom runs through its own gesture events, and double-tap zoom is a default action of touchend;
+    // cancelling both makes sure it never zooms. Cancelling touchend also drops the synthetic click,
+    // which nothing needs: ripples start on pointerdown.
     const noZoom = (e: Event) => e.preventDefault();
-    for (const type of ['gesturestart', 'gesturechange']) {
+    for (const type of ['gesturestart', 'gesturechange', 'touchend']) {
       document.addEventListener(type, noZoom, { passive: false });
       this.destroyRef.onDestroy(() => document.removeEventListener(type, noZoom));
     }

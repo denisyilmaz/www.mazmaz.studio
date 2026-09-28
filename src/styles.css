@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import 'tailwindcss-safe-area';
 
 @theme {
   --font-schengen: 'Schengen', ui-sans-serif, system-ui, sans-serif;
