@@ -10,6 +10,10 @@ body {
   background: #fff;
   color: #000;
   overscroll-behavior: none;
+  /* The whole page is the grid: a drag moves the peak, it never pans or zooms. */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {

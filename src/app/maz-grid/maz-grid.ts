@@ -62,6 +62,9 @@ interface Ripple {
   c: number;
   r: number;
   start: number;
+  /** Hue at the leading edge, and the signed distance the hue travels to the trailing edge, in degrees. */
+  hue: number;
+  span: number;
 }
 
 /** One cubic Bézier hop of a wandering visitor, then a short pause at the end point. */
@@ -75,7 +78,11 @@ interface Wander {
   pauseUntil: number;
 }
 
-const WORD = 'maz';
+/**
+ * The word, one span per letter: the peak shapes whole words, the colour wave paints letters.
+ * Spelled out because the template has to be static.
+ */
+const LETTERS = '<span>m</span><span>a</span><span>z</span>';
 /** Rest: light, narrow, italic. Peak: ultra, extended, upright. */
 const REST = { wght: 200, wdth: 100, slnt: -12 };
 const PEAK = { wght: 1000, wdth: 125, slnt: 0 };
@@ -98,10 +105,17 @@ const PAIR_HORIZONTAL = false;
 const SPRING = { type: 'spring', stiffness: 150, damping: 24, mass: 1 } as const;
 /** Extra reach, in cells, a point must travel past a pair edge before the pair switches. Kills flicker at boundaries. */
 const HYSTERESIS = 0.25;
-/** Output quantisation: a style write only happens when a value crosses one of these steps. */
-const WGHT_STEP = 8;
-const WDTH_STEP = 0.5;
-const SLNT_STEP = 0.5;
+/**
+ * Output quantisation: the rest-to-peak blend snaps to this many steps, all axes together. Every
+ * distinct axis combination is a separate font instance the browser has to build and rasterise, and
+ * every step a cell crosses repaints its row, so few steps keep raster inside the frame budget.
+ * Stepping each axis on its own produced hundreds of instances and dropped about half the frames.
+ */
+const LEVELS = 24;
+const VARIATIONS = Array.from({ length: LEVELS + 1 }, (_, i) => {
+  const axis = (k: keyof typeof REST) => +(REST[k] + ((PEAK[k] - REST[k]) * i) / LEVELS).toFixed(2);
+  return `"wght" ${axis('wght')}, "wdth" ${axis('wdth')}, "slnt" ${axis('slnt')}`;
+});
 /**
  * Visitors. The first entry is the real pointer; it only wanders while no pointer is active.
  * The others are simulated visitors, always wandering, at a share of the real strength.
@@ -113,18 +127,40 @@ const VISITORS: { strength: number; pace: number }[] = [
 ];
 /** Wander timing: seconds per hop = base + perCell * distance (rows count less, they are shorter). */
 const WANDER = { base: 1.6, perCell: 0.38, rowScale: 0.45, pauseMin: 0.5, pauseMax: 2.2 };
-/** Click ripple: a ring of colour expanding from the click. Speed and ring width in px. */
-const RIPPLE = { speed: 700, width: 160, color: [0, 0, 255] as const };
-const COLOR_STEPS = 24;
+/**
+ * Click ripple: a ring expanding from the click, coloured with a slice of the rainbow. Every click
+ * picks a new slice: a start hue well away from the previous click's, and a span of `span` degrees
+ * in either direction. Speed in rows per second, half band width in rows, so the band keeps its
+ * proportions on any screen. Colour peaks in the middle of the band and blends back to the black of
+ * the text from `fade` (share of the half width) outwards. Hues are OKLCH so every colour sits at one
+ * lightness.
+ */
+const RIPPLE = { speed: 16, width: 3.5, fade: 0.3, span: [90, 140], hop: [90, 270], l: 0.68, c: 0.25 };
+/** Hue resolution in degrees, and intensity steps from black to full colour. */
+const HUE_STEP = 5;
+const HUES = 360 / HUE_STEP;
+const COLOR_STEPS = 12;
+/** Every colour a cell can take, indexed [hue step][intensity step]. */
+const PALETTE = Array.from({ length: HUES }, (_, h) =>
+  Array.from({ length: COLOR_STEPS + 1 }, (_, k) =>
+    k === 0 ? '' : `oklch(${+((RIPPLE.l * k) / COLOR_STEPS).toFixed(3)} ${+((RIPPLE.c * k) / COLOR_STEPS).toFixed(3)} ${h * HUE_STEP})`,
+  ),
+);
+const DEG = Math.PI / 180;
 
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+const smoothstep = (lo: number, hi: number, v: number) => {
+  const x = clamp((v - lo) / (hi - lo), 0, 1);
+  return x * x * (3 - 2 * x);
+};
+
 @Component({
   selector: 'maz-grid',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { class: 'fixed inset-0 block overflow-hidden select-none' },
+  host: { class: 'fixed inset-0 block touch-none overflow-hidden select-none' },
   template: `
     <h1
       class="flex flex-col font-schengen leading-none transition-opacity duration-700 ease-out"
@@ -139,7 +175,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
           [style.gap.px]="layout()?.gap ?? null"
         >
           @for (cell of row.cells; track cell.key) {
-            <span data-cell class="block" [attr.aria-hidden]="cell.semantic ? null : true">${WORD}</span>
+            <span data-cell class="block" [attr.aria-hidden]="cell.semantic ? null : true">${LETTERS}</span>
           }
         </span>
       }
@@ -149,7 +185,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
       aria-hidden="true"
       class="invisible absolute top-0 left-0 whitespace-nowrap font-schengen"
       style="font-size: 100px; font-variation-settings: 'wght' ${REST.wght}, 'wdth' ${REST.wdth}, 'slnt' ${REST.slnt}"
-      >${WORD}</span
+      >${LETTERS}</span
     >
   `,
 })
@@ -173,10 +209,19 @@ export class MazGrid {
   protected readonly ready = signal(false);
 
   private restEm = 2.4; // width of "maz" at rest in em; measured on the client
-  private cellEls: { el: HTMLElement; col: number; row: number; last: string; lastColor: string }[] = [];
+  private cellEls: { el: HTMLElement; col: number; row: number; level: number }[] = [];
+  /** Every letter, with its centre in fractional grid columns, for the colour wave. */
+  private glyphEls: { el: HTMLElement; c: number; row: number; color: string }[] = [];
+  /** Letter centres relative to the word centre, as a share of the word width at rest; measured on the client. */
+  private letterOffsets = [-1 / 3, 0, 1 / 3];
+  /** Whether any letter still carries a colour, so the wave loop can sleep between clicks. */
+  private tinted = false;
   private ripples: Ripple[] = [];
+  private lastHue = rand(0, 360);
   /** Latest click, resolved in the frame loop like pointer moves. */
   private pendingClick: { x: number; y: number } | null = null;
+  /** A touch or pen went down: the peak lands on it at once instead of springing over. */
+  private pendingJump = false;
   private rowEls: HTMLElement[][] = [];
   private readonly agents: Agent[] = VISITORS.map((v) => ({
     strength: v.strength,
@@ -208,8 +253,15 @@ export class MazGrid {
         });
       }
       await document.fonts?.load?.(`${PEAK.wght} 100px Schengen`).catch(() => undefined);
-      const w = this.probeRest().nativeElement.getBoundingClientRect().width / 100;
-      if (w > 0) this.restEm = w;
+      const probe = this.probeRest().nativeElement;
+      const box = probe.getBoundingClientRect();
+      if (box.width > 0) {
+        this.restEm = box.width / 100;
+        this.letterOffsets = Array.from(probe.children, (ch) => {
+          const r = ch.getBoundingClientRect();
+          return (r.left + r.width / 2 - (box.left + box.width / 2)) / box.width;
+        });
+      }
       this.build();
       this.bindPointer();
       this.startLoop();
@@ -223,7 +275,17 @@ export class MazGrid {
       if (!l) return;
       const rowNodes = Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('h1 > span'));
       this.rowEls = rowNodes.map((r) => Array.from(r.querySelectorAll<HTMLElement>('[data-cell]')));
-      this.cellEls = this.rowEls.flatMap((cells, row) => cells.map((el, col) => ({ el, col, row, last: '', lastColor: '' })));
+      this.cellEls = this.rowEls.flatMap((cells, row) => cells.map((el, col) => ({ el, col, row, level: -1 })));
+      // A word covers its rest width of the column; the gap makes up the rest.
+      const share = (l.fontSize * this.restEm) / (l.fontSize * this.restEm + l.gap);
+      this.glyphEls = this.cellEls.flatMap(({ el, col, row }) =>
+        Array.from(el.children as HTMLCollectionOf<HTMLElement>, (g, i) => ({
+          el: g,
+          c: col + (this.letterOffsets[i] ?? 0) * share,
+          row,
+          color: '',
+        })),
+      );
     });
   }
 
@@ -390,6 +452,8 @@ export class MazGrid {
       this.pointerActive = true;
       this.pending = { x: e.clientX, y: e.clientY };
       this.pendingClick = { x: e.clientX, y: e.clientY };
+      // A mouse is already hovering where it clicks; a finger arrives from nowhere.
+      if (e.pointerType !== 'mouse') this.pendingJump = true;
     });
     // Mouse leaves the window, or a touch ends: hand control back to the idle drift.
     on('pointerleave', () => (this.pointerActive = false));
@@ -397,6 +461,14 @@ export class MazGrid {
       if (e.pointerType !== 'mouse') this.pointerActive = false;
     });
     on('pointercancel', () => (this.pointerActive = false));
+
+    // touch-action: none keeps drags and double taps from panning or zooming. iOS Safari drives pinch zoom
+    // through its own gesture events; cancelling those as well makes sure it never zooms.
+    const noZoom = (e: Event) => e.preventDefault();
+    for (const type of ['gesturestart', 'gesturechange']) {
+      document.addEventListener(type, noZoom, { passive: false });
+      this.destroyRef.onDestroy(() => document.removeEventListener(type, noZoom));
+    }
 
     let raf = 0;
     const onResize = () => {
@@ -425,7 +497,8 @@ export class MazGrid {
         const g = this.toGrid(this.pending.x, this.pending.y);
         this.pending = null;
         user.wander = null;
-        if (g) this.moveToGrid(user, g.colF, g.rowF);
+        if (g) this.moveToGrid(user, g.colF, g.rowF, this.pendingJump);
+        this.pendingJump = false;
       } else if (!this.pointerActive && !this.reducedMotion) {
         // Idle: glide continuously along a Bézier wander instead of snapping between pairs.
         const p = this.wanderPoint(user, secs);
@@ -448,13 +521,19 @@ export class MazGrid {
       if (this.pendingClick) {
         const g = this.toGrid(this.pendingClick.x, this.pendingClick.y);
         this.pendingClick = null;
-        if (g) this.ripples.push({ c: g.colF, r: g.rowF, start: secs });
+        if (g) {
+          this.lastHue = (this.lastHue + rand(RIPPLE.hop[0], RIPPLE.hop[1])) % 360;
+          const span = rand(RIPPLE.span[0], RIPPLE.span[1]) * (Math.random() < 0.5 ? -1 : 1);
+          this.ripples.push({ c: g.colF, r: g.rowF, start: secs, hue: this.lastHue, span });
+        }
       }
-      // Ripples live until the ring has left the far corner of the grid.
+      // Ripples live until the band's trailing edge has left the far corner of the grid.
       const unitW = l.fontSize * this.restEm + l.gap;
       const unitH = l.rowH;
-      const reach = Math.hypot(l.cols * unitW, l.rows * unitH) + RIPPLE.width * 2;
-      this.ripples = this.ripples.filter((rp) => (secs - rp.start) * RIPPLE.speed < reach);
+      const speed = RIPPLE.speed * unitH;
+      const width = RIPPLE.width * unitH;
+      const reach = Math.hypot(l.cols * unitW, l.rows * unitH) + width;
+      this.ripples = this.ripples.filter((rp) => (secs - rp.start) * speed < reach);
 
       // 2. Write styles. Visitors blend softly: overlapping halos add up without exceeding the peak.
       for (const c of this.cellEls) {
@@ -464,28 +543,38 @@ export class MazGrid {
           const x = clamp((n - n0) / (1 - n0), 0, 1);
           keep *= 1 - p.s * Math.exp(-(x * x) / (2 * FALLOFF_SIGMA * FALLOFF_SIGMA));
         }
-        const t = 1 - keep;
-        const wght = Math.round((REST.wght + (PEAK.wght - REST.wght) * t) / WGHT_STEP) * WGHT_STEP;
-        const wdth = Math.round((REST.wdth + (PEAK.wdth - REST.wdth) * t) / WDTH_STEP) * WDTH_STEP;
-        const slnt = Math.round((REST.slnt + (PEAK.slnt - REST.slnt) * t) / SLNT_STEP) * SLNT_STEP;
-        const next = `"wght" ${wght}, "wdth" ${wdth}, "slnt" ${slnt}`;
-        if (next !== c.last) {
-          c.last = next;
-          c.el.style.fontVariationSettings = next;
+        const level = Math.round((1 - keep) * LEVELS);
+        if (level !== c.level) {
+          c.level = level;
+          c.el.style.fontVariationSettings = VARIATIONS[level];
         }
+      }
 
-        // Colour wave: each ripple is a Gaussian ring; overlapping rings add up.
+      // 3. Colour wave, letter by letter: across each band the hue runs through the ripple's slice from
+      // leading to trailing edge. Overlapping bands mix their hues as vectors, weighted towards the
+      // stronger one, so crossings blend instead of cutting over. Idle once the last ripple has passed.
+      if (!this.ripples.length && !this.tinted) return;
+      this.tinted = false;
+      for (const g of this.glyphEls) {
         let k = 0;
+        let hx = 0;
+        let hy = 0;
         for (const rp of this.ripples) {
-          const d = Math.hypot((c.col - rp.c) * unitW, (c.row - rp.r) * unitH);
-          const off = (d - (secs - rp.start) * RIPPLE.speed) / RIPPLE.width;
-          k += Math.exp(-off * off * 4);
+          const d = Math.hypot((g.c - rp.c) * unitW, (g.row - rp.r) * unitH);
+          const off = (d - (secs - rp.start) * speed) / width;
+          const s = 1 - smoothstep(RIPPLE.fade, 1, Math.abs(off));
+          if (s === 0) continue;
+          const h = (rp.hue + (rp.span * (1 - off)) / 2) * DEG;
+          hx += s * s * Math.cos(h);
+          hy += s * s * Math.sin(h);
+          k = Math.max(k, s);
         }
-        k = Math.round(clamp(k, 0, 1) * COLOR_STEPS) / COLOR_STEPS;
-        const color = k === 0 ? '' : `rgb(${RIPPLE.color.map((ch) => Math.round(ch * k)).join(' ')})`;
-        if (color !== c.lastColor) {
-          c.lastColor = color;
-          c.el.style.color = color;
+        const hue = Math.round(Math.atan2(hy, hx) / DEG / HUE_STEP);
+        const color = PALETTE[((hue % HUES) + HUES) % HUES][Math.round(k * COLOR_STEPS)];
+        if (color) this.tinted = true;
+        if (color !== g.color) {
+          g.color = color;
+          g.el.style.color = color;
         }
       }
     };
