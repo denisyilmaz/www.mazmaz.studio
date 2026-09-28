@@ -1,6 +1,7 @@
 <maz-grid />
 
-<div class="pointer-events-none fixed inset-safe grid place-items-center">
+<!-- Covers the visible page, which the grid scrolls down by --grid-reach. -->
+<div class="pointer-events-none absolute inset-x-0 top-(--grid-reach,0px) grid h-full place-items-center p-safe">
   <p
     class="rounded-full bg-white shadow px-4 py-1.5 text-[15px] leading-none tracking-tight text-black md:text-base"
     style="font-variation-settings: 'wght' 480"

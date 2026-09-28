@@ -160,8 +160,9 @@ const smoothstep = (lo: number, hi: number, v: number) => {
 @Component({
   selector: 'maz-grid',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  // Sized to the large viewport, so the grid runs on behind the browser's toolbars and the notch.
-  host: { class: 'fixed inset-x-0 top-0 block h-lvh touch-none overflow-hidden select-none' },
+  // Absolute, not fixed: iOS Safari cuts a fixed grid off at the edge of the page. build() stretches the
+  // host past both edges and scrolls the page into it, so the grid runs on behind the browser's bars.
+  host: { class: 'absolute inset-x-0 top-0 block h-lvh touch-none overflow-hidden select-none' },
   template: `
     <h1
       class="flex flex-col font-schengen leading-none transition-opacity duration-700 ease-out"
@@ -188,14 +189,14 @@ const smoothstep = (lo: number, hi: number, v: number) => {
       style="font-size: 100px; font-variation-settings: 'wght' ${REST.wght}, 'wdth' ${REST.wdth}, 'slnt' ${REST.slnt}"
       >${LETTERS}</span
     >
-    <span #safeArea aria-hidden="true" class="invisible fixed inset-safe"></span>
+    <span #safeArea aria-hidden="true" class="invisible absolute pt-safe pb-safe"></span>
   `,
 })
 export class MazGrid {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly destroyRef = inject(DestroyRef);
   private readonly probeRest = viewChild.required<ElementRef<HTMLElement>>('probeRest');
-  /** The part of the screen no toolbar, notch or home indicator covers. */
+  /** Carries the safe-area insets as padding, so the grid can centre on what no notch or toolbar covers. */
   private readonly safeArea = viewChild.required<ElementRef<HTMLElement>>('safeArea');
 
   /** Server / first client render: only the semantic pair, so hydration matches. */
@@ -241,6 +242,8 @@ export class MazGrid {
   /** Latest pointer position, resolved once per frame so DOM reads never interleave with writes. */
   private pending: { x: number; y: number } | null = null;
   private reducedMotion = false;
+  /** How far the host reaches above the visible page, and so how far the page is scrolled down. */
+  private reach = 0;
   /** Frozen visitor positions from the URL hash (#peaks=col,row,strength;...), used to render still images. */
   private frozen: { c: number; r: number; s: number }[] | null = null;
   private loop: ((data: { timestamp: number }) => void) | null = null;
@@ -295,6 +298,15 @@ export class MazGrid {
 
   private build() {
     const el = this.host.nativeElement;
+    // iOS Safari lays the page out between its status bar and toolbar. It shows content behind the toolbar
+    // when it runs on past the page, and behind the status bar only once the page has scrolled under it.
+    // So on touch screens the host starts `reach` above the page and runs to the bottom of the screen, and
+    // the page is scrolled down by `reach`. The bars cover screen.height - innerHeight between them.
+    const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    this.reach = touch ? Math.max(0, screen.height - innerHeight) : 0;
+    el.style.minHeight = this.reach ? `${this.reach + screen.height}px` : '';
+    document.documentElement.style.setProperty('--grid-reach', `${this.reach}px`);
+    if (this.reach) scrollTo(0, this.reach);
     const vw = el.clientWidth;
     const vh = el.clientHeight;
     const horizontal = PAIR_HORIZONTAL;
@@ -305,8 +317,10 @@ export class MazGrid {
     const gap = fontSize * GAP_RATIO;
     const cols = visibleWords + OVERFLOW_WORDS;
     // Centre on what stays visible rather than on the host, which reaches behind the toolbars.
-    const safe = this.safeArea().nativeElement.getBoundingClientRect();
-    const midY = safe.height > 0 ? safe.top + safe.height / 2 : vh / 2;
+    const inset = getComputedStyle(this.safeArea().nativeElement);
+    const safeTop = parseFloat(inset.paddingTop) || 0;
+    const safeBottom = document.documentElement.clientHeight - (parseFloat(inset.paddingBottom) || 0);
+    const midY = this.reach + (safeTop + safeBottom) / 2;
     const rows = Math.ceil((2 * Math.max(midY, vh - midY)) / rowH) + 1;
     const offsetY = midY - (rows * rowH) / 2;
 
@@ -386,7 +400,8 @@ export class MazGrid {
   /** Convert a viewport point to fractional grid coordinates (cell centres sit on integers). */
   private toGrid(x: number, y: number): { colF: number; rowF: number } | null {
     const l = this.layout()!;
-    const rowF = (y - l.offsetY) / l.rowH - 0.5;
+    // The host starts at the top of the page, which sits scrollY above the viewport.
+    const rowF = (y + scrollY - l.offsetY) / l.rowH - 0.5;
     const row = clamp(Math.round(rowF), 0, l.rows - 1);
     const cells = this.rowEls[row];
     if (!cells?.length) return null;
@@ -478,6 +493,13 @@ export class MazGrid {
       document.addEventListener(type, noZoom, { passive: false });
       this.destroyRef.onDestroy(() => document.removeEventListener(type, noZoom));
     }
+
+    // Tapping the status bar scrolls iOS back to the top; tuck the grid back under it.
+    const onScroll = () => {
+      if (Math.round(scrollY) !== this.reach) scrollTo(0, this.reach);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    this.destroyRef.onDestroy(() => window.removeEventListener('scroll', onScroll));
 
     let raf = 0;
     const onResize = () => {
